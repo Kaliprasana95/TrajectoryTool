@@ -173,23 +173,33 @@ tbody td:nth-child(2){color:var(--accent3)}
 
     <div class="sec-label">Input CSV</div>
     <div class="drop" id="dropRaw">
-      <input type="file" id="rawFile" accept=".csv"/>
-      <div class="drop-title">Raw trajectory CSV</div>
-      <div class="drop-sub">wide-format trajectory extract</div>
+      <input type="file" id="rawFile" accept=".csv,.tsv,.txt"/>
+      <div class="drop-title">Raw trajectory file</div>
+      <div class="drop-sub">CSV / TSV wide-format trajectory extract</div>
       <div class="drop-name" id="rawName"></div>
       <div class="pipe-prog" id="pipeProgWrap"><div class="pipe-prog-bar" id="pipeProgBar"></div></div>
     </div>
 
-    <div class="sec-label">Config</div>
+    <div class="sec-label">Output format</div>
+    <div class="field">
+      <label>Extraction mode</label>
+      <select id="outputMode">
+        <option value="basic">Basic — ID, Class, Y, X, time</option>
+        <option value="detailed" selected>Detailed — metadata + speed and acceleration</option>
+      </select>
+      <small id="outputModeHelp">ID · Class · distance · average speed · Y · X · speed · accelerations · time</small>
+    </div>
+
+    <div class="sec-label">Input layout</div>
     <div class="field">
       <label>Fixed header columns</label>
       <input type="number" id="fixedCols" value="8" min="0" max="100"/>
-      <small>columns before trajectory data</small>
+      <small>columns before repeated trajectory data</small>
     </div>
     <div class="field">
       <label>Trajectory block size</label>
-      <input type="number" id="blockSize" value="5" min="1" max="20"/>
-      <small>x · y · spd · acc · time per frame</small>
+      <input type="number" id="blockSize" value="6" min="1" max="20"/>
+      <small>x · y · speed · tan. acc. · lat. acc. · time</small>
     </div>
     <div class="field">
       <label>ID column index</label>
@@ -198,6 +208,16 @@ tbody td:nth-child(2){color:var(--accent3)}
     <div class="field">
       <label>Class column index</label>
       <input type="number" id="clsCol" value="1" min="0"/>
+    </div>
+    <div id="metadataFields">
+      <div class="field">
+        <label>Traveled distance column index</label>
+        <input type="number" id="distCol" value="6" min="0"/>
+      </div>
+      <div class="field">
+        <label>Average speed column index</label>
+        <input type="number" id="avgCol" value="7" min="0"/>
+      </div>
     </div>
 
     <div style="margin-top:14px">
@@ -288,9 +308,9 @@ tbody td:nth-child(2){color:var(--accent3)}
     <div class="pipe-prog" id="mainProgWrap" style="height:4px"><div class="pipe-prog-bar" id="mainProgBar"></div></div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>ID</th><th>Class</th><th>Y</th><th>X</th><th>time</th></tr></thead>
+        <thead><tr id="extHeadRow"><th>ID</th><th>Class</th><th>Traveled Dist. [m]</th><th>Avg. Speed [km/h]</th><th>Y</th><th>X</th><th>Speed [km/h]</th><th>Tan. Acc. [ms-2]</th><th>Lat. Acc. [ms-2]</th><th>time</th></tr></thead>
         <tbody id="extBody">
-          <tr><td colspan="5"><div class="empty-state">
+          <tr><td colspan="10"><div class="empty-state">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
               <polyline points="14 2 14 8 20 8"/>
@@ -358,66 +378,133 @@ const CHUNK=1024*1024*4;
 // EXTRACT TAB
 // ══════════════════════════════════════════════════════════════════════════════
 let extractedBlob = null;  // Blob of processed CSV
+let lastRawFile = null;
+let currentOutputMode = 'detailed';
 
-setupDrop('dropRaw','rawFile', f=>runPipeline(f));
+setupDrop('dropRaw','rawFile', f=>{
+  lastRawFile=f;
+  runPipeline(f);
+});
+
+const outputModeEl=document.getElementById('outputMode');
+outputModeEl.addEventListener('change',()=>{
+  updateOutputModeUI();
+  if(lastRawFile) runPipeline(lastRawFile);
+});
+updateOutputModeUI();
+
+function getOutputColumns(mode){
+  return mode==='detailed'
+    ? ['ID','Class','Traveled Dist. [m]','Avg. Speed [km/h]','Y','X','Speed [km/h]','Tan. Acc. [ms-2]','Lat. Acc. [ms-2]','time']
+    : ['ID','Class','Y','X','time'];
+}
+
+function updateOutputModeUI(){
+  const mode=outputModeEl.value;
+  currentOutputMode=mode;
+  document.getElementById('metadataFields').style.display=mode==='detailed'?'block':'none';
+  document.getElementById('outputModeHelp').textContent=mode==='detailed'
+    ? 'ID · Class · distance · average speed · Y · X · speed · accelerations · time'
+    : 'ID · Class · Y · X · time';
+  document.getElementById('dlProcCSV').textContent=mode==='detailed'
+    ? 'Download detailed CSV'
+    : 'Download basic CSV';
+
+  const cols=getOutputColumns(mode);
+  document.getElementById('extHeadRow').innerHTML=cols.map(c=>`<th>${esc(c)}</th>`).join('');
+  if(!extractedBlob){
+    document.getElementById('extBody').innerHTML=`<tr><td colspan="${cols.length}"><div class="empty-state">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+      </svg>
+      Drop a raw trajectory file in the sidebar to extract trajectories
+    </div></td></tr>`;
+  }
+}
 
 function runPipeline(file){
   document.getElementById('rawName').textContent=file.name;
   extractedBlob=null; vizCSVLoaded=false;
   document.getElementById('dlProcCSV').disabled=true;
   document.getElementById('passPill').classList.remove('show');
-  setExtStatus('run','Reading… 0%');  setProg(0,true);
+  setExtStatus('run','Reading… 0%'); setProg(0,true);
 
+  const mode     =document.getElementById('outputMode').value;
   const fixedCols=+document.getElementById('fixedCols').value||8;
-  const blkSz    =+document.getElementById('blockSize').value||5;
+  const blkSz    =+document.getElementById('blockSize').value||6;
   const idCol    =+document.getElementById('idCol').value||0;
   const clsCol   =+document.getElementById('clsCol').value||1;
+  const distCol  =+document.getElementById('distCol').value||6;
+  const avgCol   =+document.getElementById('avgCol').value||7;
+
+  if(mode==='detailed' && blkSz<6){
+    setExtStatus('err','Detailed mode requires a trajectory block size of at least 6');
+    setProg(0,false);return;
+  }
 
   const fileSize=file.size;
-  let offset=0,leftover='',headerParsed=false;
+  let offset=0,leftover='',headerParsed=false,delimiter=null;
   const byClass={},classSet=new Set(),trackSet=new Set();
   let xMin=Infinity,xMax=-Infinity,yMin=Infinity,yMax=-Infinity,rowCount=0;
-  const csvChunks=['ID,Class,Y,X,time\n'];
+  const outputColumns=getOutputColumns(mode);
+  const csvChunks=[outputColumns.map(csvEscape).join(',')+'\n'];
   const previewRows=[];
 
-  function processRow(id,cls,rest){
-    while(rest.length%blkSz!==0) rest.push(NaN);
-    for(let f=0;f<rest.length/blkSz;f++){
-      const b=f*blkSz,x=rest[b],y=rest[b+1],t=rest[b+blkSz-1];
-      if(x!==x||y!==y) continue;
-      if(!byClass[cls]) byClass[cls]={};
-      if(!byClass[cls][id]) byClass[cls][id]=[];
+  function processDataRow(p){
+    const minRequired=Math.max(idCol,clsCol,fixedCols-1,mode==='detailed'?distCol:0,mode==='detailed'?avgCol:0);
+    if(p.length<=minRequired)return;
+
+    const id=p[idCol].trim();
+    const cls=p[clsCol].trim();
+    const dist=mode==='detailed'?p[distCol].trim():'';
+    const avg=mode==='detailed'?p[avgCol].trim():'';
+    const rest=p.slice(fixedCols).map(parseNumber);
+
+    for(let b=0;b+1<rest.length;b+=blkSz){
+      const x=rest[b],y=rest[b+1];
+      const speed=rest[b+2];
+      const tanAcc=rest[b+3];
+      const latAcc=rest[b+4];
+      const t=rest[b+blkSz-1];
+      if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+
+      if(!byClass[cls])byClass[cls]={};
+      if(!byClass[cls][id])byClass[cls][id]=[];
       byClass[cls][id].push(x,y,t);
       classSet.add(cls);trackSet.add(id);
       if(x<xMin)xMin=x;if(x>xMax)xMax=x;
       if(y<yMin)yMin=y;if(y>yMax)yMax=y;
+
+      const outRow=mode==='detailed'
+        ? [id,cls,dist,avg,y,x,speed,tanAcc,latAcc,t]
+        : [id,cls,y,x,t];
+      csvChunks.push(outRow.map(csvEscape).join(',')+'\n');
+      if(previewRows.length<1000)previewRows.push(outRow);
       rowCount++;
-      csvChunks.push(`${id},${cls},${y},${x},${t}\n`);
-      if(previewRows.length<1000) previewRows.push([id,cls,y,x,t]);
     }
   }
 
-  function processChunk(text){
+  function processLine(line){
+    if(!line.trim())return;
+    if(!delimiter)delimiter=detectDelimiter(line);
+    const p=parseDelimitedLine(line,delimiter);
+    if(!headerParsed){headerParsed=true;return;}
+    processDataRow(p);
+  }
+
+  function processChunk(text,final=false){
     const combined=leftover+text;
-    const nl=combined.lastIndexOf('\n');
-    if(nl===-1){leftover=combined;return;}
-    leftover=combined.slice(nl+1);
-    const blk=combined.slice(0,nl);
-    let s=0;
-    while(s<blk.length){
-      let e=blk.indexOf('\n',s);if(e===-1)e=blk.length;
-      const line=blk.slice(s,e).trim();s=e+1;
-      if(!line)continue;
-      if(!headerParsed){headerParsed=true;continue;}
-      const p=line.split(',');
-      if(p.length<=Math.max(idCol,clsCol,fixedCols))continue;
-      processRow(p[idCol].trim(),p[clsCol].trim(),p.slice(fixedCols).map(Number));
-    }
+    const lines=combined.split(/\r?\n/);
+    leftover=final?'':lines.pop();
+    lines.forEach(processLine);
+    if(final && leftover.trim())processLine(leftover);
   }
 
   function readNext(){
     if(offset>=fileSize){
-      if(leftover.trim())processChunk('');
+      if(leftover.trim())processLine(leftover);
       finalize();return;
     }
     const fr=new FileReader();
@@ -429,42 +516,42 @@ function runPipeline(file){
       setExtStatus('run',`Processing… ${pct}%`);
       setTimeout(readNext,0);
     };
+    fr.onerror=()=>{
+      setExtStatus('err','Could not read the selected file');
+      setProg(0,false);
+    };
     fr.readAsText(file.slice(offset,offset+CHUNK));
   }
 
   function finalize(){
     if(rowCount===0){
-      setExtStatus('err','No valid rows — check Fixed columns & Block size');
+      setExtStatus('err','No valid trajectory points — check column indices and block size');
       setProg(0,false);return;
     }
-    extractedBlob=new Blob(csvChunks,{type:'text/csv'});
+    extractedBlob=new Blob(csvChunks,{type:'text/csv;charset=utf-8'});
+    currentOutputMode=mode;
 
-    // update extract stats
     document.getElementById('eTracks').textContent=trackSet.size.toLocaleString();
     document.getElementById('eRows').textContent=rowCount.toLocaleString();
     document.getElementById('eCls').textContent=classSet.size;
-    document.getElementById('eFrames').textContent=yMax.toFixed(1);
+    document.getElementById('eFrames').textContent=Number.isFinite(yMax)?yMax.toFixed(1):'—';
 
-    // render preview table
+    document.getElementById('extHeadRow').innerHTML=outputColumns.map(c=>`<th>${esc(c)}</th>`).join('');
     const tbody=document.getElementById('extBody');
-    tbody.innerHTML=previewRows.map(r=>`<tr>
-      <td>${esc(String(r[0]))}</td><td>${esc(String(r[1]))}</td>
-      <td>${r[2].toFixed(4)}</td><td>${r[3].toFixed(4)}</td>
-      <td>${isNaN(r[4])?'—':r[4].toFixed(4)}</td></tr>`).join('');
+    tbody.innerHTML=previewRows.map(r=>`<tr>${r.map((v,i)=>
+      `<td>${i<2?esc(String(v)):esc(formatPreview(v))}</td>`).join('')}</tr>`).join('');
     document.getElementById('extPreviewNote').textContent=
       rowCount>1000?`Showing 1,000 of ${rowCount.toLocaleString()} rows`:'';
 
-    // enable download
     document.getElementById('dlProcCSV').disabled=false;
     document.getElementById('passPill').classList.add('show');
 
-    // store for visualizer
     vizExtractedData={byClass,classes:[...classSet],tracks:trackSet,
       xMin,xMax,yMin,yMax,rowCount};
 
     setProg(100,true);
     setTimeout(()=>setProg(0,false),700);
-    setExtStatus('ok',`Done — ${rowCount.toLocaleString()} rows · ${trackSet.size.toLocaleString()} tracks`);
+    setExtStatus('ok',`Done — ${rowCount.toLocaleString()} rows · ${trackSet.size.toLocaleString()} tracks · ${mode}`);
   }
 
   readNext();
@@ -474,7 +561,9 @@ document.getElementById('dlProcCSV').addEventListener('click',()=>{
   if(!extractedBlob)return;
   const a=document.createElement('a');
   a.href=URL.createObjectURL(extractedBlob);
-  a.download='trajectory_processed.csv';
+  a.download=currentOutputMode==='detailed'
+    ? 'trajectory_detailed_long.csv'
+    : 'trajectory_basic_long.csv';
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),5000);
 });
@@ -731,6 +820,51 @@ document.getElementById('lwSlider').addEventListener('input',function(){
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+function detectDelimiter(line){
+  const candidates=[',','\t',';'];
+  let best=',',bestCount=-1;
+  candidates.forEach(d=>{
+    const count=parseDelimitedLine(line,d).length-1;
+    if(count>bestCount){best=d;bestCount=count;}
+  });
+  return best;
+}
+
+function parseDelimitedLine(line,delimiter){
+  const cells=[];
+  let value='',quoted=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){
+      if(quoted && line[i+1]==='"'){value+='"';i++;}
+      else quoted=!quoted;
+    }else if(ch===delimiter && !quoted){
+      cells.push(value);value='';
+    }else value+=ch;
+  }
+  cells.push(value);
+  return cells;
+}
+
+function parseNumber(value){
+  const s=String(value??'').trim();
+  if(!s)return NaN;
+  const n=Number(s);
+  return Number.isFinite(n)?n:NaN;
+}
+
+function csvEscape(value){
+  if(value===null||value===undefined||Number.isNaN(value))return '';
+  const s=String(value);
+  return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
+}
+
+function formatPreview(value){
+  if(value===null||value===undefined||Number.isNaN(value))return '—';
+  if(typeof value==='number'&&Number.isFinite(value))return value.toFixed(4);
+  return String(value);
+}
+
 function setupDrop(zoneId,inputId,handler){
   const zone=document.getElementById(zoneId);
   const input=document.getElementById(inputId);
